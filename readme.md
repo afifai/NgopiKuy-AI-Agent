@@ -21,11 +21,23 @@ Dirancang untuk membantu pencatatan pembayaran, monitoring status anggota, dan r
 
 ## Prasyarat
 - Python 3.10+
-- Hermes Agent
+- Hermes Agent (wajib)
 - Google Cloud Service Account
 - Google Sheets API dan Google Drive API aktif
 
-## Setup
+## Instalasi Hermes Agent
+
+Project ini bergantung pada Hermes Agent. Pastikan sudah terinstall sebelum setup.
+
+Repository resmi:
+https://github.com/NousResearch/hermes-agent/tree/main
+
+Ikuti instruksi instalasi dari repository tersebut sampai bisa menjalankan perintah:
+```bash
+hermes --help
+```
+
+## Setup Project
 
 ### 1. Clone Repository
 ```bash
