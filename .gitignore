@@ -1,0 +1,24 @@
+# Kredensial & Environment
+.env
+credentials.json
+config.yaml
+
+# Hermes State, Memory & Auth
+auth.json
+auth.lock
+logs/
+memories/
+sessions/
+cron/
+
+# Python Cache & Virtual Environments
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+
+# OS generated files
+.DS_Store
+Thumbs.db
