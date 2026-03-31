@@ -22,9 +22,8 @@ else:
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 
-# FILTER SAKTI
-BLOCK_LIST_NAMA = ["TOTAL", "JUMLAH", "ESTIMATED", "NAMA ANGGOTA", "KETERANGAN", "GRANDE TOTAL", "SALDO"]
-BATAS_IURAN_WAJAR = 100000  # Iuran kas nggak mungkin > 100rb sebulan. Kalau lebih, itu baris TOTAL.
+# Batas iuran untuk validasi nominal (iuran kas per bulan)
+BATAS_IURAN_WAJAR = 100000 
 
 if not SHEET_ID:
     raise ValueError("SPREADSHEET_ID tidak ditemukan di file .env!")
@@ -41,6 +40,10 @@ def _parse_rupiah(nominal_str):
     try:
         if not nominal_str: return 0
         s = str(nominal_str).strip()
+        
+        # Kebal terhadap baris persentase
+        if '%' in s: return 0
+        
         if s.endswith(',00') or s.endswith('.00'): s = s[:-3]
         elif s.endswith('.0'): s = s[:-2]
         cleaned = ''.join(c for c in s if c.isdigit())
@@ -89,6 +92,7 @@ def _find_header_and_data_v2():
     if not data: return [], -1, -1, []
         
     header_row_idx, nama_col_idx = -1, -1
+    # 1. Cari Header sebagai Start Marker
     for r_idx, row in enumerate(data[:15]): 
         for c_idx, cell in enumerate(row):
             if cell['value'].lower() in ['nama', 'nama anggota']:
@@ -99,18 +103,24 @@ def _find_header_and_data_v2():
     if header_row_idx == -1: return data, -1, -1, []
     headers = data[header_row_idx]
     
+    # 2. Ambil data HANYA sampai ketemu Stop Marker "TOTAL per bulan"
     actual_data = []
     for row in data[header_row_idx + 1:]:
         if len(row) <= nama_col_idx: continue
+        
         nama_raw = row[nama_col_idx]['value'].strip()
-        # Filter Nama Berdasarkan Block List
-        if not nama_raw or any(x in nama_raw.upper() for x in BLOCK_LIST_NAMA):
-            continue
-        actual_data.append(row)
+        
+        # STOP MARKER: Berhenti total jika menyentuh baris totalan
+        if "TOTAL PER BULAN" in nama_raw.upper():
+            break
+            
+        # Ambil hanya baris yang punya nama (bukan baris kosong di tengah)
+        if nama_raw:
+            actual_data.append(row)
         
     return headers, header_row_idx, nama_col_idx, actual_data
 
-# ==================== TOOL 1: STATUS INDIVIDU ====================
+# ==================== TOOLS ====================
 class CekKasInput(BaseModel):
     nama_anggota: str = Field(..., description="Nama anggota yang dicari status kasnya")
 
@@ -150,7 +160,6 @@ def cek_status_kas(input_data: CekKasInput) -> str:
         return f"Anggota bernama '{input_data.nama_anggota}' tidak ditemukan."
     except Exception as e: return f"Error: {str(e)}"
 
-# ==================== TOOL 2: RINGKASAN BULAN ====================
 class RingkasanBulanInput(BaseModel):
     bulan_tahun: str = Field(..., description="Bulan target. Contoh: '03/2026'")
 
@@ -161,7 +170,6 @@ def ringkasan_kas_bulan(input_data: RingkasanBulanInput) -> str:
         if target_col_idx == -1: return f"Kolom bulan '{input_data.bulan_tahun}' tidak ditemukan."
         
         sudah_bayar, belum_bayar, diliburkan, total_uang = [], [], [], 0
-        
         for row in actual_data:
             nama = row[nama_idx]['value'].strip()
             cell = row[target_col_idx] if target_col_idx < len(row) else {"value": "", "color": "white"}
@@ -195,32 +203,5 @@ def ringkasan_kas_bulan(input_data: RingkasanBulanInput) -> str:
             pesan += f"• Kurang: Rp{target_uang - total_uang:,}\n"
             pesan += f"\nDaftar Belum Bayar: {', '.join(belum_bayar[:10])}"
             if len(belum_bayar) > 10: pesan += f" ... (+{len(belum_bayar)-10} orang)"
-            
-        return pesan
-    except Exception as e: return f"Error: {str(e)}"
-
-# ==================== TOOL 3: REKAP TUNGGAKAN ====================
-class CekTunggakanInput(BaseModel):
-    dummy: str = Field("dummy", description="Parameter kosong")
-
-def rekap_tunggakan(input_data: CekTunggakanInput) -> str:
-    try:
-        headers, _, nama_idx, actual_data = _find_header_and_data_v2()
-        bulan_ini = datetime.now().strftime("%m/%Y")
-        kolom_bulan_idx = [i for i, h in enumerate(headers) if re.match(r"^\d{2}/\d{4}$", h['value']) and _parse_month_year(h['value']) <= _parse_month_year(bulan_ini)]
-        
-        rekap = []
-        for row in actual_data:
-            nama, nunggak = row[nama_idx]['value'], 0
-            for idx in kolom_bulan_idx:
-                cell = row[idx] if idx < len(row) else {"value": "", "color": "white"}
-                nominal = _parse_rupiah(cell['value'])
-                if cell['color'] not in ["black", "green"] and nominal == 0:
-                    nunggak += 1
-            if nunggak > 0: rekap.append({"nama": nama, "tunggakan": nunggak})
-                
-        rekap_sorted = sorted(rekap, key=lambda x: x['tunggakan'], reverse=True)
-        pesan = "⚠️ *Rekap Anggota Menunggak Terbanyak*\n"
-        for idx, data in enumerate(rekap_sorted[:15]): pesan += f"{idx+1}. {data['nama']} ({data['tunggakan']} bulan)\n"
         return pesan
     except Exception as e: return f"Error: {str(e)}"
