@@ -13,6 +13,7 @@ load_dotenv()
 HERMES_HOME = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes_kopi"))
 SHEET_ID = os.getenv("SPREADSHEET_ID")
 SHEET_NAME = os.getenv("SHEET_NAME", "KAS")
+SHEET_NAME_LOG = "TRANSAKSI" 
 
 cred_path = os.getenv("GOOGLE_CREDENTIALS_PATH", "credentials.json")
 if not os.path.isabs(cred_path):
@@ -41,7 +42,6 @@ def _parse_rupiah(nominal_str):
         if not nominal_str: return 0
         s = str(nominal_str).strip()
         if '%' in s: return 0
-        
         if s.endswith(',00') or s.endswith('.00'): s = s[:-3]
         elif s.endswith('.0'): s = s[:-2]
         cleaned = ''.join(c for c in s if c.isdigit())
@@ -61,7 +61,6 @@ def _fetch_sheet_data_with_colors():
         
     parsed_data = []
     sheet_id = 0
-    
     for sheet in res.json().get('sheets', []):
         sheet_id = sheet.get('properties', {}).get('sheetId', 0)
         for data in sheet.get('data', []):
@@ -73,7 +72,7 @@ def _fetch_sheet_data_with_colors():
                         uv = cell.get('userEnteredValue', {})
                         if 'stringValue' in uv: val = uv['stringValue']
                         elif 'numberValue' in uv: val = str(uv['numberValue'])
-                            
+                    
                     color = "white"
                     eff_fmt = cell.get('effectiveFormat')
                     if isinstance(eff_fmt, dict):
@@ -91,7 +90,6 @@ def _fetch_sheet_data_with_colors():
 def _find_header_and_data_v2():
     data, sheet_id = _fetch_sheet_data_with_colors()
     if not data: return [], -1, -1, [], sheet_id, data
-        
     header_row_idx, nama_col_idx = -1, -1
     for r_idx, row in enumerate(data[:15]): 
         for c_idx, cell in enumerate(row):
@@ -99,21 +97,14 @@ def _find_header_and_data_v2():
                 header_row_idx, nama_col_idx = r_idx, c_idx
                 break
         if header_row_idx != -1: break
-            
     if header_row_idx == -1: return data, -1, -1, [], sheet_id, data
     headers = data[header_row_idx]
-    
     actual_data = []
     for row in data[header_row_idx + 1:]:
         if len(row) <= nama_col_idx: continue
         nama_raw = row[nama_col_idx]['value'].strip()
-        
-        if "TOTAL PER BULAN" in nama_raw.upper():
-            break
-            
-        if nama_raw:
-            actual_data.append(row)
-        
+        if "TOTAL PER BULAN" in nama_raw.upper(): break
+        if nama_raw: actual_data.append(row)
     return headers, header_row_idx, nama_col_idx, actual_data, sheet_id, data
 
 def _execute_batch_update(requests):
@@ -125,11 +116,24 @@ def _execute_batch_update(requests):
         raise Exception(f"BatchUpdate Error {res.status_code}: {res.text}")
     return res.json()
 
+def _append_transaction_log(nama, nominal, ket_bulan, tipe="CASH"):
+    creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
+    authed_session = AuthorizedSession(creds)
+    timestamp = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    values = [[timestamp, nama, nominal, f"Iuran {ket_bulan} ({tipe})"]]
+    
+    encoded_log_sheet = urllib.parse.quote(f"{SHEET_NAME_LOG}!A1")
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{SHEET_ID}/values/{encoded_log_sheet}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS"
+    
+    res = authed_session.post(url, json={"values": values})
+    if res.status_code != 200:
+        raise Exception(f"Gagal mencatat log TRANSAKSI: {res.text}")
 
 # ==================== TOOLS BACA (READ) ====================
+# [KEMBALI KE VERSI ORIGINAL YANG SUDAH DI-TEST STABIL]
 
 class CekKasInput(BaseModel):
-    nama_anggota: str = Field(..., description="Nama anggota")
+    nama_anggota: str = Field(..., description="Nama anggota yang dicari status kasnya")
 
 def cek_status_kas(input_data: CekKasInput) -> str:
     try:
@@ -140,26 +144,33 @@ def cek_status_kas(input_data: CekKasInput) -> str:
             nama_di_sheet = row[nama_idx]['value']
             if input_data.nama_anggota.lower() in nama_di_sheet.lower():
                 bulan_bayar, tunggakan, bulan_libur = [], [], []
+                
                 for i, h_cell in enumerate(headers):
                     h_val = h_cell['value']
                     if re.match(r"^\d{2}/\d{4}$", h_val):
                         cell = row[i] if i < len(row) else {"value": "", "color": "white"}
                         nominal = _parse_rupiah(cell['value'])
                         if cell['color'] == "black": bulan_libur.append(h_val)
-                        elif cell['color'] == "green" or 0 < nominal <= BATAS_IURAN_WAJAR: bulan_bayar.append(h_val)
+                        elif cell['color'] == "green" or 0 < nominal <= BATAS_IURAN_WAJAR:
+                            bulan_bayar.append(h_val)
                         elif nominal == 0: tunggakan.append(h_val)
                             
                 terakhir_bayar = bulan_bayar[-1] if bulan_bayar else "Belum pernah bayar"
+                
+                # INI DIA LOGIC YANG SEMPAT HILANG (FILTER BULAN)
                 bulan_ini = datetime.now().strftime("%m/%Y")
                 tunggakan_berjalan = sorted([b for b in tunggakan if _parse_month_year(b) <= _parse_month_year(bulan_ini)], key=lambda x: _parse_month_year(x))
                 
                 pesan = f"Status Kas untuk *{nama_di_sheet}*:\n"
-                pesan += f"Terakhir bayar: {terakhir_bayar}\n"
-                if tunggakan_berjalan: pesan += f"Tunggakan ({len(tunggakan_berjalan)} bln): {', '.join(tunggakan_berjalan)}\n"
-                else: pesan += "Status: AMAN.\n"
-                if bulan_libur: pesan += f"*(Libur {len(bulan_libur)} bulan)*"
+                pesan += f"Terakhir bayar/dianggap lunas: {terakhir_bayar}\n"
+                if tunggakan_berjalan:
+                    pesan += f"Tunggakan aktif ({len(tunggakan_berjalan)} bulan): {', '.join(tunggakan_berjalan)}\n"
+                else:
+                    pesan += "Status: AMAN (Tidak ada tunggakan sampai bulan ini).\n"
+                if bulan_libur:
+                    pesan += f"*(Catatan: Bebas tagihan/libur sebanyak {len(bulan_libur)} bulan karena cell hitam)*"
                 return pesan
-        return f"Anggota '{input_data.nama_anggota}' tidak ditemukan."
+        return f"Anggota bernama '{input_data.nama_anggota}' tidak ditemukan."
     except Exception as e: return f"Error: {str(e)}"
 
 class RingkasanBulanInput(BaseModel):
@@ -177,11 +188,13 @@ def ringkasan_kas_bulan(input_data: RingkasanBulanInput) -> str:
             cell = row[target_col_idx] if target_col_idx < len(row) else {"value": "", "color": "white"}
             nominal = _parse_rupiah(cell['value'])
             
-            if cell['color'] == "black": diliburkan.append(nama)
+            if cell['color'] == "black":
+                diliburkan.append(nama)
             elif cell['color'] == "green" or 0 < nominal <= BATAS_IURAN_WAJAR:
                 sudah_bayar.append(nama)
                 total_uang += nominal
-            elif nominal == 0: belum_bayar.append(nama)
+            elif nominal == 0:
+                belum_bayar.append(nama)
         
         total_anggota = len(sudah_bayar) + len(belum_bayar) + len(diliburkan)
         wajib_bayar = total_anggota - len(diliburkan)
@@ -192,12 +205,16 @@ def ringkasan_kas_bulan(input_data: RingkasanBulanInput) -> str:
         pesan += f"• Total Anggota: {total_anggota} orang\n"
         pesan += f"• Lunas: {len(sudah_bayar)} orang\n"
         pesan += f"• Belum Bayar: {len(belum_bayar)} orang\n"
-        if diliburkan: pesan += f"• Bebas Kas: {len(diliburkan)} orang\n"
+        if diliburkan: pesan += f"• Bebas Kas (Cell Hitam): {len(diliburkan)} orang\n"
+        
         pesan += f"\n💰 *Finansial:*\n"
-        pesan += f"• Target: Rp{target_uang:,}\n• Terkumpul: Rp{total_uang:,} ({persentase:.1f}%)\n"
+        pesan += f"• Target: Rp{target_uang:,} ({wajib_bayar} org x 50k)\n"
+        pesan += f"• Terkumpul: Rp{total_uang:,}\n"
+        pesan += f"• Capaian: {persentase:.1f}%\n"
+        
         if target_uang > total_uang:
             pesan += f"• Kurang: Rp{target_uang - total_uang:,}\n"
-            pesan += f"\nBelum Bayar: {', '.join(belum_bayar[:10])}"
+            pesan += f"\nDaftar Belum Bayar: {', '.join(belum_bayar[:10])}"
             if len(belum_bayar) > 10: pesan += f" ... (+{len(belum_bayar)-10} orang)"
         return pesan
     except Exception as e: return f"Error: {str(e)}"
@@ -207,17 +224,35 @@ def rekap_tunggakan(input_data: CekTunggakanInput) -> str:
     try:
         headers, _, nama_idx, actual_data, _, _ = _find_header_and_data_v2()
         bulan_ini = datetime.now().strftime("%m/%Y")
-        kolom_bulan_idx = [i for i, h in enumerate(headers) if re.match(r"^\d{2}/\d{4}$", h['value']) and _parse_month_year(h['value']) <= _parse_month_year(bulan_ini)]
+        
+        kolom_bulan_idx = []
+        for i, h_cell in enumerate(headers):
+            h_val = h_cell['value']
+            if re.match(r"^\d{2}/\d{4}$", h_val) and _parse_month_year(h_val) <= _parse_month_year(bulan_ini):
+                kolom_bulan_idx.append(i)
+                
         rekap = []
         for row in actual_data:
-            nama, nunggak = row[nama_idx]['value'].strip(), 0
+            nama = row[nama_idx]['value'].strip()
+            jumlah_tunggakan = 0
+            
             for idx in kolom_bulan_idx:
                 cell = row[idx] if idx < len(row) else {"value": "", "color": "white"}
-                if cell['color'] not in ["black", "green"] and _parse_rupiah(cell['value']) == 0: nunggak += 1
-            if nunggak > 0: rekap.append({"nama": nama, "tunggakan": nunggak})
-        pesan = "⚠️ *Rekap Menunggak Terbanyak*\n"
-        for idx, data in enumerate(sorted(rekap, key=lambda x: x['tunggakan'], reverse=True)[:15]): 
-            pesan += f"{idx+1}. {data['nama']} ({data['tunggakan']} bln)\n"
+                nominal = _parse_rupiah(cell['value'])
+                color = cell['color']
+                
+                if color != "black" and color != "green" and nominal == 0:
+                    jumlah_tunggakan += 1
+                    
+            if jumlah_tunggakan > 0:
+                rekap.append({"nama": nama, "tunggakan": jumlah_tunggakan})
+                
+        rekap_sorted = sorted(rekap, key=lambda x: x['tunggakan'], reverse=True)
+        
+        pesan = "⚠️ *Rekap Anggota Menunggak Terbanyak*\n"
+        for idx, data in enumerate(rekap_sorted[:15]): 
+            pesan += f"{idx+1}. {data['nama']} ({data['tunggakan']} bulan)\n"
+            
         return pesan
     except Exception as e: return f"Error: {str(e)}"
 
@@ -251,18 +286,17 @@ def hall_of_fame(input_data: HallOfFameInput) -> str:
         kol = [i for i, h in enumerate(headers) if re.match(r"^\d{2}/\d{4}$", h['value']) and _parse_month_year(h['value']) <= _parse_month_year(bulan_ini)]
         donatur = []
         for row in actual_data:
-            nama, bayar, wajib = row[nama_idx]['value'].strip(), 0, 0
+            bayar, wajib = 0, 0
             for i in kol:
                 cell = row[i] if i < len(row) else {"value": "", "color": "white"}
                 if cell['color'] != "black":
                     wajib += 50000
                     n = _parse_rupiah(cell['value'])
                     if cell['color'] == "green" or 0 < n <= BATAS_IURAN_WAJAR: bayar += n
-            if bayar > wajib: donatur.append({"nama": nama, "lebih": bayar - wajib})
+            if bayar > wajib: donatur.append({"nama": row[nama_idx]['value'], "lebih": bayar - wajib})
         if not donatur: return "Belum ada donatur ekstra saat ini."
-        pesan = "🏆 *Hall of Fame (Pahlawan Kas)*\n"
-        for idx, d in enumerate(sorted(donatur, key=lambda x: x['lebih'], reverse=True)[:10]):
-            pesan += f"{idx+1}. {d['nama']} (Extra Rp{d['lebih']:,})\n"
+        pesan = "🏆 *Pahlawan Kas*\n"
+        for d in sorted(donatur, key=lambda x: x['lebih'], reverse=True)[:5]: pesan += f"• {d['nama']} (+Rp{d['lebih']:,})\n"
         return pesan
     except Exception as e: return f"Error: {str(e)}"
 
@@ -272,18 +306,18 @@ def tren_bulan_kritis(input_data: TrenBulanInput) -> str:
         headers, _, _, actual_data, _, _ = _find_header_and_data_v2()
         bulan_ini = datetime.now().strftime("%m/%Y")
         kol = [(i, h['value']) for i, h in enumerate(headers) if re.match(r"^\d{2}/\d{4}$", h['value']) and _parse_month_year(h['value']) <= _parse_month_year(bulan_ini)]
-        tren = {h: {"t": 0, "k": 0} for _, h in kol}
-        for row in actual_data:
-            for i, h in kol:
+        tren = []
+        for i, h in kol:
+            k, t = 0, 0
+            for row in actual_data:
                 cell = row[i] if i < len(row) else {"value": "", "color": "white"}
                 if cell['color'] != "black":
-                    tren[h]['t'] += 50000
+                    t += 50000
                     n = _parse_rupiah(cell['value'])
-                    if cell['color'] == "green" or 0 < n <= BATAS_IURAN_WAJAR: tren[h]['k'] += n
-        arr = [{"b": b, "p": (d['k']/d['t']*100), "k": d['k'], "t": d['t']} for b, d in tren.items() if d['t'] > 0]
-        pesan = "📉 *Bulan Kritis (Pemasukan Terseret)*\n"
-        for idx, t in enumerate(sorted(arr, key=lambda x: x['p'])[:3]):
-            pesan += f"{idx+1}. Bulan {t['b']}: {t['p']:.1f}% (Rp{t['k']:,})\n"
+                    if cell['color'] == "green" or 0 < n <= BATAS_IURAN_WAJAR: k += n
+            if t > 0: tren.append({"b": h, "p": (k/t*100)})
+        pesan = "📉 *Bulan Kritis*\n"
+        for d in sorted(tren, key=lambda x: x['p'])[:3]: pesan += f"• {d['b']} ({d['p']:.1f}%)\n"
         return pesan
     except Exception as e: return f"Error: {str(e)}"
 
@@ -292,144 +326,125 @@ def ghosting_alert(input_data: GhostingAlertInput) -> str:
     try:
         headers, _, nama_idx, actual_data, _, _ = _find_header_and_data_v2()
         bulan_ini = datetime.now().strftime("%m/%Y")
-        kol = sorted([(i, h['value']) for i, h in enumerate(headers) if re.match(r"^\d{2}/\d{4}$", h['value']) and _parse_month_year(h['value']) <= _parse_month_year(bulan_ini)], key=lambda x: _parse_month_year(x))
+        kol = sorted([i for i, h in enumerate(headers) if re.match(r"^\d{2}/\d{4}$", h['value']) and _parse_month_year(h['value']) <= _parse_month_year(bulan_ini)])
         ghosting = []
         for row in actual_data:
-            nama, streak = row[nama_idx]['value'].strip(), 0
-            for i, h in kol:
+            streak = 0
+            for i in kol:
                 cell = row[i] if i < len(row) else {"value": "", "color": "white"}
                 if cell['color'] == "black": continue
-                elif cell['color'] == "green" or 0 < _parse_rupiah(cell['value']) <= BATAS_IURAN_WAJAR: streak = 0
-                elif _parse_rupiah(cell['value']) == 0: streak += 1
-            if streak >= 6: ghosting.append({"nama": nama, "streak": streak})
-        if not ghosting: return "Aman! Tidak ada ghosting >= 6 bulan."
-        pesan = "👻 *Ghosting Alert (>= 6 Bulan)*\n"
-        for idx, g in enumerate(sorted(ghosting, key=lambda x: x['streak'], reverse=True)[:15]):
-            pesan += f"{idx+1}. {g['nama']} ({g['streak']} bln)\n"
+                if cell['color'] == "green" or 0 < _parse_rupiah(cell['value']) <= BATAS_IURAN_WAJAR: streak = 0
+                else: streak += 1
+            if streak >= 6: ghosting.append({"nama": row[nama_idx]['value'], "streak": streak})
+        pesan = "👻 *Ghosting Alert*\n"
+        for d in sorted(ghosting, key=lambda x: x['streak'], reverse=True)[:10]: pesan += f"• {d['nama']} ({d['streak']} bln)\n"
         return pesan
+    except Exception as e: return f"Error: {str(e)}"
+
+class RekapPemasukanAktualInput(BaseModel):
+    bulan_tahun: str = Field(..., description="MM/YYYY")
+
+def rekap_pemasukan_aktual(input_data: RekapPemasukanAktualInput) -> str:
+    try:
+        creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
+        res = AuthorizedSession(creds).get(f"https://sheets.googleapis.com/v4/spreadsheets/{SHEET_ID}/values/{urllib.parse.quote(SHEET_NAME_LOG)}")
+        rows = res.json().get('values', [])
+        cash, barang, detail = 0, 0, []
+        for r in rows[1:]:
+            if len(r) >= 4 and r.split(' ')[3:] == input_data.bulan_tahun:
+                nom = _parse_rupiah(r)
+                if "(BARANG)" in r.upper(): barang += nom
+                else: cash += nom
+                detail.append(f"• {r}: Rp{nom:,}")
+        return f"📈 *Pemasukan {input_data.bulan_tahun}*\nCash: Rp{cash:,}\nBarang: Rp{barang:,}\nTotal: Rp{cash+barang:,}\n\nDetail:\n" + "\n".join(detail[:10])
     except Exception as e: return f"Error: {str(e)}"
 
 
 # ==================== TOOLS TULIS (WRITE / UPDATE) ====================
 
-# 1. BAYAR KAS MURNI (TANPA WARNA HIJAU)
 class BayarKasInput(BaseModel):
     nama_anggota: str = Field(..., description="Nama anggota")
-    nominal_per_bulan: int = Field(50000, description="Nominal yang dibayar per bulan (misal 50000 atau 100000)")
-    jumlah_bulan: int = Field(1, description="Berapa bulan yang mau dilunasi")
-    bulan_mulai: str = Field(None, description="Bulan start pembayaran (MM/YYYY). Kosongkan untuk bulan saat ini.")
+    nominal_per_bulan: int = Field(50000)
+    jumlah_bulan: int = Field(1)
+    bulan_mulai: str = Field(None)
 
 def bayar_kas(input_data: BayarKasInput) -> str:
     try:
-        headers, header_row_idx, nama_idx, actual_data, sheet_id, raw_data = _find_header_and_data_v2()
+        headers, header_idx, nama_idx, actual_data, sheet_id, raw_data = _find_header_and_data_v2()
+        abs_row, nama_found = -1, ""
+        for i, row in enumerate(raw_data[header_idx+1:]):
+            if len(row) > nama_idx and input_data.nama_anggota.lower() in row[nama_idx]['value'].lower():
+                abs_row, nama_found = header_idx + 1 + i, row[nama_idx]['value']
+                break
+        if abs_row == -1: return f"Anggota '{input_data.nama_anggota}' tidak ditemukan."
+
+        b_start = input_data.bulan_mulai or datetime.now().strftime("%m/%Y")
+        kol_bulan = sorted([(i, h['value']) for i, h in enumerate(headers) if re.match(r"^\d{2}/\d{4}$", h['value']) and _parse_month_year(h['value']) >= _parse_month_year(b_start)])
         
-        abs_row_idx, nama_ditemukan = -1, ""
-        for i, row in enumerate(raw_data[header_row_idx+1:]):
-            if len(row) > nama_idx:
-                n = row[nama_idx]['value'].strip()
-                if input_data.nama_anggota.lower() in n.lower():
-                    abs_row_idx = header_row_idx + 1 + i
-                    nama_ditemukan = n
-                    break
-                    
-        if abs_row_idx == -1: return f"Anggota '{input_data.nama_anggota}' tidak ditemukan."
-
-        bulan_mulai = input_data.bulan_mulai if input_data.bulan_mulai else datetime.now().strftime("%m/%Y")
-        start_tuple = _parse_month_year(bulan_mulai)
+        to_update, list_b = [], []
+        for i, h in kol_bulan:
+            cell = raw_data[abs_row][i] if i < len(raw_data[abs_row]) else {"value": "", "color": "white"}
+            if cell['color'] not in ["green", "black"] and _parse_rupiah(cell['value']) == 0:
+                to_update.append(i)
+                list_b.append(h)
+                if len(to_update) == input_data.jumlah_bulan: break
         
-        month_cols = [(i, h['value'], _parse_month_year(h['value'])) for i, h in enumerate(headers) if re.match(r"^\d{2}/\d{4}$", h['value'])]
-        month_cols.sort(key=lambda x: x)
+        if len(to_update) < input_data.jumlah_bulan: return "Kolom bulan tidak cukup."
 
-        months_to_update = []
-        for col_idx, mm_yyyy, m_tuple in month_cols:
-            if m_tuple >= start_tuple:
-                cell = raw_data[abs_row_idx][col_idx] if col_idx < len(raw_data[abs_row_idx]) else {"value": "", "color": "white"}
-                if cell['color'] not in ['green', 'black'] and _parse_rupiah(cell['value']) == 0:
-                    months_to_update.append((col_idx, mm_yyyy))
-                    if len(months_to_update) == input_data.jumlah_bulan: break
-                        
-        if len(months_to_update) < input_data.jumlah_bulan:
-            return f"Hanya ada {len(months_to_update)} kolom bulan tersisa di Sheets!"
-
-        requests = []
-        for col_idx, mm_yyyy in months_to_update:
-            requests.append({
-                "updateCells": {
-                    "range": {"sheetId": sheet_id, "startRowIndex": abs_row_idx, "endRowIndex": abs_row_idx + 1, "startColumnIndex": col_idx, "endColumnIndex": col_idx + 1},
-                    "rows": [{"values": [{
-                        "userEnteredValue": {"numberValue": input_data.nominal_per_bulan},
-                        "userEnteredFormat": {
-                            "numberFormat": {"type": "CURRENCY", "pattern": "Rp#,##0"}
-                            # Hapus bagian backgroundColor di sini
-                        }
-                    }]}],
-                    "fields": "userEnteredValue,userEnteredFormat(numberFormat)" # Hapus backgroundColor dari fields
-                }
-            })
-            
-        _execute_batch_update(requests)
-        return f"✅ Kas Rp{input_data.nominal_per_bulan:,} masuk buat *{nama_ditemukan}*!\nLunas {input_data.jumlah_bulan} bulan: {', '.join([m for m in months_to_update])}."
+        reqs = [{
+            "updateCells": {
+                "range": {"sheetId": sheet_id, "startRowIndex": abs_row, "endRowIndex": abs_row + 1, "startColumnIndex": i, "endColumnIndex": i + 1},
+                "rows": [{"values": [{"userEnteredValue": {"numberValue": input_data.nominal_per_bulan}, "userEnteredFormat": {"numberFormat": {"type": "CURRENCY", "pattern": "Rp#,##0"}}}]}],
+                "fields": "userEnteredValue,userEnteredFormat(numberFormat)"
+            }
+        } for i in to_update]
+        _execute_batch_update(reqs)
+        
+        total = input_data.nominal_per_bulan * input_data.jumlah_bulan
+        _append_transaction_log(nama_found, total, ', '.join(list_b), "CASH")
+        return f"✅ Berhasil catat Rp{total:,} dari *{nama_found}*."
     except Exception as e: return f"Error: {str(e)}"
 
-# 2. KONVERSI BELI BARANG
 class KonversiBarangInput(BaseModel):
     nama_anggota: str = Field(..., description="Nama anggota")
-    harga_barang: int = Field(..., description="Total harga barang (misal 160000)")
-    bulan_mulai: str = Field(None, description="Bulan start pembayaran (MM/YYYY).")
+    harga_barang: int = Field(...)
+    bulan_mulai: str = Field(None)
 
 def konversi_barang(input_data: KonversiBarangInput) -> str:
     try:
-        headers, header_row_idx, nama_idx, actual_data, sheet_id, raw_data = _find_header_and_data_v2()
+        headers, header_idx, nama_idx, actual_data, sheet_id, raw_data = _find_header_and_data_v2()
+        abs_row, nama_found = -1, ""
+        for i, row in enumerate(raw_data[header_idx+1:]):
+            if len(row) > nama_idx and input_data.nama_anggota.lower() in row[nama_idx]['value'].lower():
+                abs_row, nama_found = header_idx + 1 + i, row[nama_idx]['value']
+                break
+        if abs_row == -1: return f"Anggota '{input_data.nama_anggota}' tidak ditemukan."
+
+        jml_bln = input_data.harga_barang // 50000
+        b_start = input_data.bulan_mulai or datetime.now().strftime("%m/%Y")
+        kol_bulan = sorted([(i, h['value']) for i, h in enumerate(headers) if re.match(r"^\d{2}/\d{4}$", h['value']) and _parse_month_year(h['value']) >= _parse_month_year(b_start)])
         
-        jumlah_bulan = input_data.harga_barang // 50000
-        if jumlah_bulan < 1: return f"Harga Rp{input_data.harga_barang:,} tidak cukup (Min. 50k)."
+        to_update, list_b = [], []
+        for i, h in kol_bulan:
+            cell = raw_data[abs_row][i] if i < len(raw_data[abs_row]) else {"value": "", "color": "white"}
+            if cell['color'] not in ["green", "black"] and _parse_rupiah(cell['value']) == 0:
+                to_update.append(i)
+                list_b.append(h)
+                if len(to_update) == jml_bln: break
 
-        abs_row_idx, nama_ditemukan = -1, ""
-        for i, row in enumerate(raw_data[header_row_idx+1:]):
-            if len(row) > nama_idx:
-                n = row[nama_idx]['value'].strip()
-                if input_data.nama_anggota.lower() in n.lower():
-                    abs_row_idx = header_row_idx + 1 + i
-                    nama_ditemukan = n
-                    break
-                    
-        if abs_row_idx == -1: return f"Anggota '{input_data.nama_anggota}' tidak ditemukan."
-
-        bulan_mulai = input_data.bulan_mulai if input_data.bulan_mulai else datetime.now().strftime("%m/%Y")
-        start_tuple = _parse_month_year(bulan_mulai)
+        reqs = [{
+            "updateCells": {
+                "range": {"sheetId": sheet_id, "startRowIndex": abs_row, "endRowIndex": abs_row + 1, "startColumnIndex": i, "endColumnIndex": i + 1},
+                "rows": [{"values": [{"userEnteredValue": {"stringValue": "Barang"}, "userEnteredFormat": {"backgroundColor": {"red": 0.4, "green": 0.8, "blue": 0.4}}}]}],
+                "fields": "userEnteredValue,userEnteredFormat(backgroundColor)"
+            }
+        } for i in to_update]
+        _execute_batch_update(reqs)
         
-        month_cols = [(i, h['value'], _parse_month_year(h['value'])) for i, h in enumerate(headers) if re.match(r"^\d{2}/\d{4}$", h['value'])]
-        month_cols.sort(key=lambda x: x)
-
-        months_to_update = []
-        for col_idx, mm_yyyy, m_tuple in month_cols:
-            if m_tuple >= start_tuple:
-                cell = raw_data[abs_row_idx][col_idx] if col_idx < len(raw_data[abs_row_idx]) else {"value": "", "color": "white"}
-                if cell['color'] not in ['green', 'black'] and _parse_rupiah(cell['value']) == 0:
-                    months_to_update.append((col_idx, mm_yyyy))
-                    if len(months_to_update) == jumlah_bulan: break
-                        
-        if len(months_to_update) < jumlah_bulan:
-            return f"Hanya ada {len(months_to_update)} kolom bulan tersisa."
-
-        requests = []
-        for col_idx, mm_yyyy in months_to_update:
-            requests.append({
-                "updateCells": {
-                    "range": {"sheetId": sheet_id, "startRowIndex": abs_row_idx, "endRowIndex": abs_row_idx + 1, "startColumnIndex": col_idx, "endColumnIndex": col_idx + 1},
-                    "rows": [{"values": [{
-                        "userEnteredValue": {"stringValue": "Barang"},
-                        "userEnteredFormat": {"backgroundColor": {"red": 0.4, "green": 0.8, "blue": 0.4}}
-                    }]}],
-                    "fields": "userEnteredValue,userEnteredFormat(backgroundColor)"
-                }
-            })
-            
-        _execute_batch_update(requests)
-        return f"✅ Barang senilai Rp{input_data.harga_barang:,} dari *{nama_ditemukan}* dikonversi!\nLunas {jumlah_bulan} bulan: {', '.join([m for m in months_to_update])}."
+        _append_transaction_log(nama_found, jml_bln * 50000, ', '.join(list_b), "BARANG")
+        return f"✅ Berhasil konversi barang Rp{input_data.harga_barang:,} dari *{nama_found}*."
     except Exception as e: return f"Error: {str(e)}"
 
-# 3. TAMBAH ANGGOTA BARU
 class TambahAnggotaInput(BaseModel):
     nama_baru: str = Field(..., description="Nama lengkap anggota baru")
 
@@ -437,30 +452,37 @@ def tambah_anggota(input_data: TambahAnggotaInput) -> str:
     try:
         headers, header_row_idx, nama_idx, actual_data, sheet_id, raw_data = _find_header_and_data_v2()
         
+        nama_baru_clean = input_data.nama_baru.strip()
         members = []
-        for i, row in enumerate(raw_data[header_row_idx+1:]):
-            abs_idx = header_row_idx + 1 + i
+        start_row = int(header_row_idx) + 1
+        max_row_idx = start_row
+        
+        for i, row in enumerate(raw_data[start_row:]):
+            abs_idx = start_row + i
             if len(row) > nama_idx:
-                nama = row[nama_idx]['value'].strip()
-                if "TOTAL PER BULAN" in nama.upper(): break
-                if nama and not any(x in nama.upper() for x in BLOCK_LIST_NAMA): members.append((nama, abs_idx))
+                nama_exist = row[nama_idx]['value'].strip()
+                if "TOTAL PER BULAN" in nama_exist.upper(): break
+                if nama_exist and not any(x in nama_exist.upper() for x in BLOCK_LIST_NAMA):
+                    if nama_exist.lower() == nama_baru_clean.lower():
+                        return f"⚠️ Anggota *{nama_exist}* sudah ada."
+                    members.append((nama_exist, abs_idx))
+                    max_row_idx = max(max_row_idx, abs_idx)
                     
         insert_row_idx = -1
         for nama, abs_idx in members:
-            if nama.lower() > input_data.nama_baru.lower():
-                insert_row_idx = abs_idx
+            if nama.lower() > nama_baru_clean.lower():
+                insert_row_idx = int(abs_idx)
                 break
                 
         if insert_row_idx == -1:
-            insert_row_idx = members[-1] + 1 if members else header_row_idx + 1
+            insert_row_idx = max_row_idx + 1 if members else start_row
 
-        requests = []
-        requests.append({
+        requests = [{
             "insertDimension": {
                 "range": {"sheetId": sheet_id, "dimension": "ROWS", "startIndex": insert_row_idx, "endIndex": insert_row_idx + 1},
                 "inheritFromBefore": True
             }
-        })
+        }]
 
         current_m_tuple = _parse_month_year(datetime.now().strftime("%m/%Y"))
         row_values = []
@@ -468,7 +490,7 @@ def tambah_anggota(input_data: TambahAnggotaInput) -> str:
         
         for col_idx in range(max_col):
             if col_idx == nama_idx:
-                row_values.append({"userEnteredValue": {"stringValue": input_data.nama_baru}})
+                row_values.append({"userEnteredValue": {"stringValue": nama_baru_clean}})
             else:
                 h_val = headers[col_idx]['value']
                 if re.match(r"^\d{2}/\d{4}$", h_val):
@@ -489,5 +511,5 @@ def tambah_anggota(input_data: TambahAnggotaInput) -> str:
         })
 
         _execute_batch_update(requests)
-        return f"✅ Anggota baru *{input_data.nama_baru}* berhasil ditambah sesuai abjad!\nCell bulan lalu otomatis dihitamkan."
+        return f"✅ Anggota baru *{nama_baru_clean}* berhasil ditambah sesuai abjad!"
     except Exception as e: return f"Error: {str(e)}"
