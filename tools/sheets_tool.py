@@ -246,3 +246,153 @@ def rekap_tunggakan(input_data: CekTunggakanInput) -> str:
             
         return pesan
     except Exception as e: return f"Error: {str(e)}"
+
+# ==================== TOOL 4: TOTAL PIUTANG GLOBAL ====================
+class TotalPiutangInput(BaseModel):
+    dummy: str = Field("dummy", description="Parameter kosong")
+
+def total_piutang_global(input_data: TotalPiutangInput) -> str:
+    try:
+        headers, _, nama_idx, actual_data = _find_header_and_data_v2()
+        bulan_ini = datetime.now().strftime("%m/%Y")
+        kolom_valid = [i for i, h in enumerate(headers) if re.match(r"^\d{2}/\d{4}$", h['value']) and _parse_month_year(h['value']) <= _parse_month_year(bulan_ini)]
+        
+        total_kas_masuk = 0
+        total_piutang = 0
+        
+        for row in actual_data:
+            for i in kolom_valid:
+                cell = row[i] if i < len(row) else {"value": "", "color": "white"}
+                nominal = _parse_rupiah(cell['value'])
+                color = cell['color']
+                
+                if color == "black":
+                    continue
+                elif color == "green" or 0 < nominal <= BATAS_IURAN_WAJAR:
+                    total_kas_masuk += nominal
+                elif nominal == 0:
+                    total_piutang += 50000
+                    
+        potensi = total_kas_masuk + total_piutang
+        kesehatan = (total_kas_masuk / potensi * 100) if potensi > 0 else 0
+        
+        pesan = "💰 *Laporan Piutang & Kesehatan Kas*\n"
+        pesan += f"• Total Kas Terkumpul: Rp{total_kas_masuk:,}\n"
+        pesan += f"• Total Uang Nyangkut (Piutang): Rp{total_piutang:,}\n"
+        pesan += f"• Potensi Maksimal Kas: Rp{potensi:,}\n"
+        pesan += f"• Rasio Kesehatan: {kesehatan:.1f}% uang berhasil ditagih.\n"
+        return pesan
+    except Exception as e: return f"Error: {str(e)}"
+
+# ==================== TOOL 5: HALL OF FAME (DONATUR) ====================
+class HallOfFameInput(BaseModel):
+    dummy: str = Field("dummy", description="Parameter kosong")
+
+def hall_of_fame(input_data: HallOfFameInput) -> str:
+    try:
+        headers, _, nama_idx, actual_data = _find_header_and_data_v2()
+        bulan_ini = datetime.now().strftime("%m/%Y")
+        kolom_valid = [i for i, h in enumerate(headers) if re.match(r"^\d{2}/\d{4}$", h['value']) and _parse_month_year(h['value']) <= _parse_month_year(bulan_ini)]
+        
+        donatur = []
+        for row in actual_data:
+            nama = row[nama_idx]['value'].strip()
+            total_bayar = 0
+            total_kewajiban = 0
+            
+            for i in kolom_valid:
+                cell = row[i] if i < len(row) else {"value": "", "color": "white"}
+                nominal = _parse_rupiah(cell['value'])
+                if cell['color'] != "black":
+                    total_kewajiban += 50000
+                    if cell['color'] == "green" or 0 < nominal <= BATAS_IURAN_WAJAR:
+                        total_bayar += nominal
+                        
+            if total_bayar > total_kewajiban:
+                donatur.append({"nama": nama, "lebihnya": total_bayar - total_kewajiban})
+                
+        if not donatur: return "Belum ada anggota yang bayar lebih dari kewajibannya saat ini."
+        
+        donatur_sorted = sorted(donatur, key=lambda x: x['lebihnya'], reverse=True)
+        pesan = "🏆 *Hall of Fame (Pahlawan Kas)*\n"
+        pesan += "Anggota yang membayar lebih dari total kewajibannya:\n"
+        for idx, d in enumerate(donatur_sorted[:10]):
+            pesan += f"{idx+1}. {d['nama']} (Extra Rp{d['lebihnya']:,})\n"
+        return pesan
+    except Exception as e: return f"Error: {str(e)}"
+
+# ==================== TOOL 6: TREN BULAN KRITIS ====================
+class TrenBulanInput(BaseModel):
+    dummy: str = Field("dummy", description="Parameter kosong")
+
+def tren_bulan_kritis(input_data: TrenBulanInput) -> str:
+    try:
+        headers, _, nama_idx, actual_data = _find_header_and_data_v2()
+        bulan_ini = datetime.now().strftime("%m/%Y")
+        kolom_valid = [(i, h['value']) for i, h in enumerate(headers) if re.match(r"^\d{2}/\d{4}$", h['value']) and _parse_month_year(h['value']) <= _parse_month_year(bulan_ini)]
+        
+        tren_bulan = {h_val: {"target": 0, "terkumpul": 0} for _, h_val in kolom_valid}
+        
+        for row in actual_data:
+            for i, h_val in kolom_valid:
+                cell = row[i] if i < len(row) else {"value": "", "color": "white"}
+                nominal = _parse_rupiah(cell['value'])
+                if cell['color'] != "black":
+                    tren_bulan[h_val]['target'] += 50000
+                    if cell['color'] == "green" or 0 < nominal <= BATAS_IURAN_WAJAR:
+                        tren_bulan[h_val]['terkumpul'] += nominal
+                        
+        tren_list = []
+        for bln, data in tren_bulan.items():
+            if data['target'] > 0:
+                persen = (data['terkumpul'] / data['target']) * 100
+                tren_list.append({"bulan": bln, "persen": persen, "kumpul": data['terkumpul'], "target": data['target']})
+                
+        tren_list.sort(key=lambda x: x['persen'])
+        
+        pesan = "📉 *Bulan Paling Kritis (Pemasukan Terseret)*\n"
+        pesan += "3 Bulan dengan persentase pengumpulan kas terendah:\n"
+        for idx, t in enumerate(tren_list[:3]):
+            pesan += f"{idx+1}. Bulan {t['bulan']}: {t['persen']:.1f}% (Terkumpul Rp{t['kumpul']:,} dari target Rp{t['target']:,})\n"
+        return pesan
+    except Exception as e: return f"Error: {str(e)}"
+
+# ==================== TOOL 7: GHOSTING ALERT ====================
+class GhostingAlertInput(BaseModel):
+    dummy: str = Field("dummy", description="Parameter kosong")
+
+def ghosting_alert(input_data: GhostingAlertInput) -> str:
+    try:
+        headers, _, nama_idx, actual_data = _find_header_and_data_v2()
+        bulan_ini = datetime.now().strftime("%m/%Y")
+        # Ambil kolom valid dan pastikan urutannya kronologis (dari bulan paling awal ke bulan ini)
+        kolom_valid = sorted([(i, h['value']) for i, h in enumerate(headers) if re.match(r"^\d{2}/\d{4}$", h['value']) and _parse_month_year(h['value']) <= _parse_month_year(bulan_ini)], key=lambda x: _parse_month_year(x))
+        
+        ghosting = []
+        for row in actual_data:
+            nama = row[nama_idx]['value'].strip()
+            streak_nunggak = 0
+            
+            for i, h_val in kolom_valid:
+                cell = row[i] if i < len(row) else {"value": "", "color": "white"}
+                nominal = _parse_rupiah(cell['value'])
+                
+                if cell['color'] == "black":
+                    continue # Dianggap skip aja, nggak mutus streak nunggak, tapi nggak nambah juga
+                elif cell['color'] == "green" or 0 < nominal <= BATAS_IURAN_WAJAR:
+                    streak_nunggak = 0 # Kalau bayar, streak reset
+                elif nominal == 0:
+                    streak_nunggak += 1
+                    
+            if streak_nunggak >= 6:
+                ghosting.append({"nama": nama, "streak": streak_nunggak})
+                
+        if not ghosting: return "Aman! Tidak ada anggota yang nunggak lebih dari 6 bulan berturut-turut."
+        
+        ghosting_sorted = sorted(ghosting, key=lambda x: x['streak'], reverse=True)
+        pesan = "👻 *Ghosting Alert (Kritis)*\n"
+        pesan += "Anggota yang tidak bayar kas 6 bulan berturut-turut (atau lebih) sampai bulan ini:\n"
+        for idx, g in enumerate(ghosting_sorted[:15]):
+            pesan += f"{idx+1}. {g['nama']} (Hilang {g['streak']} bulan berturut-turut)\n"
+        return pesan
+    except Exception as e: return f"Error: {str(e)}"
