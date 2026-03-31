@@ -120,7 +120,7 @@ def _find_header_and_data_v2():
         
     return headers, header_row_idx, nama_col_idx, actual_data
 
-# ==================== TOOLS ====================
+# ==================== TOOL 1: STATUS INDIVIDU ====================
 class CekKasInput(BaseModel):
     nama_anggota: str = Field(..., description="Nama anggota yang dicari status kasnya")
 
@@ -160,6 +160,7 @@ def cek_status_kas(input_data: CekKasInput) -> str:
         return f"Anggota bernama '{input_data.nama_anggota}' tidak ditemukan."
     except Exception as e: return f"Error: {str(e)}"
 
+# ==================== TOOL 2: RINGKASAN BULAN ====================
 class RingkasanBulanInput(BaseModel):
     bulan_tahun: str = Field(..., description="Bulan target. Contoh: '03/2026'")
 
@@ -203,5 +204,45 @@ def ringkasan_kas_bulan(input_data: RingkasanBulanInput) -> str:
             pesan += f"• Kurang: Rp{target_uang - total_uang:,}\n"
             pesan += f"\nDaftar Belum Bayar: {', '.join(belum_bayar[:10])}"
             if len(belum_bayar) > 10: pesan += f" ... (+{len(belum_bayar)-10} orang)"
+        return pesan
+    except Exception as e: return f"Error: {str(e)}"
+
+# ==================== TOOL 3: REKAP TUNGGAKAN ====================
+class CekTunggakanInput(BaseModel):
+    dummy: str = Field("dummy", description="Parameter kosong")
+
+def rekap_tunggakan(input_data: CekTunggakanInput) -> str:
+    try:
+        headers, _, nama_idx, actual_data = _find_header_and_data_v2()
+        bulan_ini = datetime.now().strftime("%m/%Y")
+        
+        kolom_bulan_idx = []
+        for i, h_cell in enumerate(headers):
+            h_val = h_cell['value']
+            if re.match(r"^\d{2}/\d{4}$", h_val) and _parse_month_year(h_val) <= _parse_month_year(bulan_ini):
+                kolom_bulan_idx.append(i)
+                
+        rekap = []
+        for row in actual_data:
+            nama = row[nama_idx]['value'].strip()
+            jumlah_tunggakan = 0
+            
+            for idx in kolom_bulan_idx:
+                cell = row[idx] if idx < len(row) else {"value": "", "color": "white"}
+                nominal = _parse_rupiah(cell['value'])
+                color = cell['color']
+                
+                if color != "black" and color != "green" and nominal == 0:
+                    jumlah_tunggakan += 1
+                    
+            if jumlah_tunggakan > 0:
+                rekap.append({"nama": nama, "tunggakan": jumlah_tunggakan})
+                
+        rekap_sorted = sorted(rekap, key=lambda x: x['tunggakan'], reverse=True)
+        
+        pesan = "⚠️ *Rekap Anggota Menunggak Terbanyak*\n"
+        for idx, data in enumerate(rekap_sorted[:15]): 
+            pesan += f"{idx+1}. {data['nama']} ({data['tunggakan']} bulan)\n"
+            
         return pesan
     except Exception as e: return f"Error: {str(e)}"
