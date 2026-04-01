@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "strict_mode": true,
+  "allow_username_fallback": false,
+  "allow_full_name_fallback": false,
+  "members": [
+    {
+      "telegram_user_id": 111111111,
+      "username": "username_telegram",
+      "full_name": "Nama Telegram",
+      "sheet_name": "Nama Persis di Sheet KAS",
+      "role": "member",
+      "active": true,
+      "notes": "opsional"
+    }
+  ]
+}

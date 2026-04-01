@@ -1,0 +1,18 @@
+Quick Start
+
+1. Extract ZIP ini
+2. Pastikan file tools/sheets_tool.py sudah ada
+3. Taruh credentials.json di root project
+4. Isi .env
+5. Ubah absolute path di config.example.yaml
+6. Jalankan:
+   python mcp/kopi_server.py
+7. Jalankan Hermes gateway
+8. Test di Telegram
+
+Contoh test:
+@ngopikuy_bot cek status kas Afif Akbar Iskandar
+@ngopikuy_bot Afif Akbar Iskandar bayar kas 2 bulan mulai 04/2026
+@ngopikuy_bot siapa pahlawan kas
+@ngopikuy_bot pemasukan aktual bulan 04/2026
+

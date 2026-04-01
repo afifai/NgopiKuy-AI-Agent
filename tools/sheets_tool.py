@@ -389,13 +389,14 @@ def tambah_anggota(input_data: TambahAnggotaInput) -> str:
         return f"✅ Anggota *{n_b}* berhasil ditambah."
     except Exception as e: return f"Error: {str(e)}"
 
-# ==================== TRANSACTION TOOL (FLEXIBLE FORMULA) ====================
+# ==================== TRANSACTION TOOL (FLEXIBLE FORMULA & PLATFORM) ====================
 class CatatPengeluaranInput(BaseModel):
     nama_item: str = Field(..., description="Keterangan pengeluaran")
     nominal: int = Field(None, description="Harga total atau harga satuan")
     harga_satuan: int = Field(None, description="Harga satuan barang")
     jumlah_item: int = Field(None, description="Jumlah / Qty barang")
     tanggal: str = Field(None, description="DD/MM/YYYY")
+    platform: str = Field("Sistem", description="Platform tempat belanja (contoh: Tokopedia, Basecamp, Tiktok, dll)")
 
 def catat_pengeluaran(input_data: CatatPengeluaranInput) -> str:
     try:
@@ -403,14 +404,12 @@ def catat_pengeluaran(input_data: CatatPengeluaranInput) -> str:
         creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
         authed_session = AuthorizedSession(creds)
         
-        # 1. Normalisasi Input (Skenario Fleksibel)
+        # 1. Normalisasi Input
         qty = input_data.jumlah_item if input_data.jumlah_item is not None else 1
         
-        # Tentukan Harga Satuan
         if input_data.harga_satuan is not None:
             price_per_unit = input_data.harga_satuan
         elif input_data.nominal is not None:
-            # Jika jumlah_item > 1, nominal dianggap harga satuan. Jika tidak, harga total.
             price_per_unit = input_data.nominal 
         else:
             return "Error: Nominal atau Harga Satuan harus diisi."
@@ -419,7 +418,7 @@ def catat_pengeluaran(input_data: CatatPengeluaranInput) -> str:
         m_y_target = _get_my(tgl_input)
         if not m_y_target: return f"Error: Format tanggal tidak valid ({tgl_input})"
         
-        # 2. Ambil Meta & Data (A:I)
+        # 2. Ambil Meta & Data
         url_m = f"https://sheets.googleapis.com/v4/spreadsheets/{SHEET_ID}"
         r_meta = authed_session.get(url_m).json()
         s_id = next((s.get('properties', {}).get('sheetId', 0) for s in r_meta.get('sheets', []) if s.get('properties', {}).get('title') == sheet_name_trans), 0)
@@ -431,9 +430,9 @@ def catat_pengeluaran(input_data: CatatPengeluaranInput) -> str:
         last_physical_row = 1
         month_start_idx = -1
         
-        # 3. Scan Fisik Baris (Cari ID & Titik Awal Bulan)
+        # 3. Scan Fisik Baris
         for i, row in enumerate(rows):
-            if i < 2: continue # Skip Header
+            if i < 2: continue
             if not row or not any(str(x).strip() for x in row): continue
             
             last_physical_row = i
@@ -478,7 +477,7 @@ def catat_pengeluaran(input_data: CatatPengeluaranInput) -> str:
             mk_c(qty, "numberValue"),
             mk_c(price_per_unit, "numberValue", "RIGHT", True),
             mk_f(formula_total_item, "RIGHT"),
-            mk_c("Sistem"),
+            mk_c(input_data.platform, "stringValue"), # <--- IDE LO MASUK DI SINI BANG
             mk_c("LUNAS")
         ]
         
@@ -497,7 +496,7 @@ def catat_pengeluaran(input_data: CatatPengeluaranInput) -> str:
         reqs.append({"mergeCells": {"range": {"sheetId": s_id, "startRowIndex": month_start_idx, "endRowIndex": new_row_idx + 1, "startColumnIndex": 8, "endColumnIndex": 9}, "mergeType": "MERGE_ALL"}})
         
         _execute_batch_update(reqs)
-        return f"✅ Berhasil catat ID #{new_id}. {input_data.nama_item} (Qty: {qty}). Kalkulasi & Rekap otomatis via formula."
+        return f"✅ Berhasil catat ID #{new_id}. {input_data.nama_item} (Platform: {input_data.platform}). Kalkulasi beres!"
 
     except Exception as e:
         import traceback
